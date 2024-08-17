@@ -5,7 +5,7 @@ source .env set
 #Set default values
 WATCH_DELAY=${WATCH_DELAY:-30}
 VIDEO_FOLDER=${VIDEO_FOLDER:-'~/Videos'}
-VIDEO_SCALE=${VIDEO_SCALE:-240}
+# VIDEO_SCALE=${VIDEO_SCALE:-240}
 TMP_VIDEO_FOLDER="/tmp/pi-kiosk-videos"
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
@@ -213,13 +213,33 @@ function convert_source_files() {
     mkdir -p "$out_folder"
 
     if [ -d "$in_folder" ]; then
-        while read path ; do            
+        if [ -z $VIDEO_SCALE ]; then
+            while read path ; do
+                local name=$(basename "$path")
+                log_debug "copping $path to $out_folder/$name"
+                cp "$path" "$out_folder/$name"
+            done <<< "$(get_video_files "$in_folder")"
+        else
+            while read path ; do            
+                local name=$(basename "$path")
+                log_debug "converting $path to $out_folder/$name"
+                #-vf scale=-2:$VIDEO_SCALE -c:v libx264 -crf 18 -preset veryslow -c:a copy
+                ffmpeg -i "$path" -vf scale=-2:$VIDEO_SCALE -c:v libx264 -crf 18 -c:a copy "$out_folder/$name"  > /dev/null 2>&1
+            done <<< "$(get_video_files "$in_folder")"
+        fi
+    fi
+}
+
+function move_converted_files() {
+    local in_folder="$TMP_VIDEO_FOLDER"
+    local out_folder=./files/converted
+
+    rm -f "$out_folder/*"
+
+    if [ -d "$in_folder" ]; then
+        while read path ; do
             local name=$(basename "$path")
-            log_debug "converting $path to $out_folder/$name"
-            #-vf scale=-2:$VIDEO_SCALE -c:v libx264 -crf 18 -preset veryslow -c:a copy
-            ffmpeg -i "$path" \
-                -vf scale=-2:$VIDEO_SCALE -c:v libx264 -crf 18 -c:a copy \
-                "$out_folder/$name"  > /dev/null 2>&1
+            mv "$path" "$out_folder/$name"
         done <<< "$(get_video_files "$in_folder")"
     fi
 }

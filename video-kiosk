@@ -1,0 +1,274 @@
+#!/usr/bin/bash
+
+source .env set
+
+#Set default values
+WATCH_DELAY=${WATCH_DELAY:-30}
+VIDEO_FOLDER=${VIDEO_FOLDER:-'~/Videos'}
+VIDEO_SCALE=${VIDEO_SCALE:-240}
+TMP_VIDEO_FOLDER="/tmp/pi-kiosk-videos"
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+
+function log_debug() {
+    echo "$(date) - DEBUG - $1"
+}
+
+function log_info() {
+    echo "$(date) - INFO - $1"
+}
+
+function log_error() {
+    echo "$(date) - ERROR - $1"
+}
+
+function setup() {
+    if [ ! -z $1 ] || [ ! -d ./files ]; then
+        log_info "setting pi video kiosk"
+        ### Update system
+
+        log_info "installing required componsents: vlc ffmpeg"
+        sudo apt install -y vlc ffmpeg  > /dev/null 2>&1
+
+
+        ### Enable autologin in desktop mode
+        log_info "enabling autologin mode"
+        sudo sed /etc/lightdm/lightdm.conf -i -e "s/^\(#\|\)autologin-user=.*/autologin-user=$USER/"
+        sudo rm -f /etc/systemd/system/getty@tty1.service.d/autologin.conf
+        sudo bash -c 'cat > /etc/systemd/system/getty@tty1.service.d/autologin.conf << EOF
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin $USER --noclear %I \$TERM
+EOF'
+
+        sudo systemctl --quiet set-default graphical.target
+
+
+        ### Setup VNC Server
+        log_info "setting up VNC server"
+
+        sudo rm -f /etc/xdg/autostart/vnc_xrandr.desktop
+        sudo bash -c 'cat > /etc/xdg/autostart/vnc_xrandr.desktop << EOF
+[Desktop Entry]
+Type=Application
+Name=vnc_xrandr
+Comment=Set resolution for VNC
+NoDisplay=true
+Exec=sh -c "if ! (xrandr | grep -q -w connected) ; then /usr/bin/xrandr --fb 1920x1080 ; fi"
+EOF'
+
+        sudo systemctl enable vncserver-x11-serviced.service;
+        sudo systemctl start vncserver-x11-serviced.service;
+
+        ###
+        log_info "setting video kiosk scripts"
+        chmod a+x video-kiosk
+
+        mkdir -p files/source
+        mkdir -p files/converted
+
+        log_info "setting video kiosk scripts: autostart"
+        mkdir -p ~/.config/autostart
+
+        rm -f ~/.config/autostart/pi-video-kiosk.desktop
+        cat > ~/.config/autostart/pi-video-kiosk.desktop << EOF
+[Desktop Entry]
+Type=Application
+Name=Pi Video Kiosk
+OnlyShowIn=GNOME;XFCE;LXDE;
+Exec=bash $SCRIPT_DIR/video-kiosk start
+EOF
+        log_info "video kiosk set up now"
+    fi
+}
+
+function reset() {
+    if [ ! -z $1 ] || [ -d ./files]; then
+        log_info "reseting video kiosk data"
+        stop;
+
+        rm -rf ./files
+        rm -rf "$TMP_VIDEO_FOLDER"
+        log_info "video kiosk data reset now"
+    fi
+}
+
+function stop() {    
+    if pgrep -x "video-kiosk" > /dev/null; then
+        log_info "stopping video kiosk"
+        ps aux | grep -ie "video-kiosk start" | awk '{print $2}' | xargs kill -9 
+        ps aux | grep -ie "video-kiosk run" | awk '{print $2}' | xargs kill -9 
+    fi
+
+    if pgrep -x "vlc" > /dev/null; then
+        pkill vlc
+    fi    
+}
+
+function get_video_files() {
+    if [ -d "$1" ]; then
+        local files=""
+        for path in $(find "$1" -type f); do
+            if [[ ! -z "$(file --mime-type "$path" | egrep ': video')" ]]; then
+                local filename=$(realpath "$path")
+                files="$files\n$filename"
+            fi
+        done
+        echo -e "${files/\\n/}"
+    fi
+}
+
+function get_folder_state() {
+    if [ -d "$1" ]; then
+        local files=""
+        while read path ; do
+            local mime=$(file --mime-type "$path" | egrep ': video')
+            if [[ ! -z $mime ]]; then
+                local filename=$(basename "$path")
+                local filesize=$(stat -c%s "$path")
+
+                files="$files\n$filename $filesize"
+            fi
+        done <<< "$(get_video_files "$1")"
+        echo -e "${files/\\n/}"
+    fi
+}
+
+function make_playlist() {
+    log_debug "making play list"
+
+    rm -f ./files/playlist.m3u
+
+    local folder="./files/converted"
+    local files=""
+    if [ -d "$folder" ]; then
+        while read path ; do
+            local mime=$(file --mime-type "$path" | egrep ': video')
+            if [[ ! -z $mime ]]; then
+                files="$files\n$path"
+            fi
+        done <<< "$(get_video_files "$folder")"
+    fi
+
+    if [ -z "$files" ]; then
+        log_debug "making play list of default video"
+        echo "$(realpath ./misc/default.mp4)" > ./files/playlist.m3u
+    else        
+        echo -e "${files/\\n/}" > ./files/playlist.m3u
+    fi
+}
+
+function has_new_videos() {
+    log_debug "checking if there are any new video files"
+    if [ -d "$VIDEO_FOLDER" ] && [ -d ./files/source ]; then
+        local videos="$(get_folder_state "$VIDEO_FOLDER")"
+        local current_videos="$(get_folder_state ./files/source)"
+        
+        if [ "$videos" != "$current_videos" ]; then
+            log_debug "found new video files"
+            return 0;
+        fi
+    fi
+
+    return 1;
+}
+
+function videos_are_uploading() {
+    log_debug "checking if new videos are uploading right now"
+    if [ -d "$VIDEO_FOLDER" ]; then
+        local current_state=$(get_folder_state "$VIDEO_FOLDER")
+
+        sleep $WATCH_DELAY
+
+        local current_state2=$(get_folder_state "$VIDEO_FOLDER")
+
+        if [ "$current_state" != "$current_state2" ]; then
+            return 0;
+        else
+            return 1;
+        fi
+    fi
+
+    return 1;
+}
+
+function copy_source_files() {
+    local in_folder="$VIDEO_FOLDER"
+    local out_folder=./files/source
+
+    rm -f "$out_folder/*"
+
+    if [ -d "$in_folder" ]; then
+        while read path ; do
+            local name=$(basename "$path")
+            cp "$path" "$out_folder/$name"
+        done <<< "$(get_video_files "$in_folder")"
+    fi
+}
+
+function convert_source_files() {
+    log_debug "converting video files"
+    local in_folder=./files/source
+    local out_folder="$TMP_VIDEO_FOLDER"
+    rm -rf "$out_folder"
+    mkdir -p "$out_folder"
+
+    if [ -d "$in_folder" ]; then
+        while read path ; do            
+            local name=$(basename "$path")
+            log_debug "converting $path to $out_folder/$name"
+            #-vf scale=-2:$VIDEO_SCALE -c:v libx264 -crf 18 -preset veryslow -c:a copy
+            ffmpeg -i "$path" \
+                -vf scale=-2:$VIDEO_SCALE -c:v libx264 -crf 18 -c:a copy \
+                "$out_folder/$name"  > /dev/null 2>&1
+        done <<< "$(get_video_files "$in_folder")"
+    fi
+}
+
+function run_vlc() {
+
+    pkill -f vlc
+    make_playlist
+
+    vlc --no-osd --fullscreen --loop ./files/playlist.m3u  > /dev/null 2>&1 &
+}
+
+function start() {
+    log_info "starting video kiosk. using video folder: $VIDEO_FOLDER"
+
+    stop;
+
+    run_vlc;
+
+    if [ ! -d ./files ]; then
+        setup;
+    fi
+    
+    while true; do    
+        if has_new_videos && ! videos_are_uploading; then
+            copy_source_files
+            convert_source_files
+
+            pkill -f vlc
+            move_converted_files
+
+            run_vlc
+        else
+            if ! pgrep -x "vlc" > /dev/null; then
+                run_vlc
+            fi
+        fi
+
+        sleep $WATCH_DELAY
+    done
+}
+
+ARG=$1
+
+case "$ARG" in
+    "start") stop; setup; start &;;
+    "stop") stop;;
+    "restart") stop; setup; start &;;
+    "reset") reset;;
+    "setup") setup 1;;
+    *) echo >&2 "Invalid command: $@. Must be one of following: start stop restart reset setup"; exit 1;;
+esac    

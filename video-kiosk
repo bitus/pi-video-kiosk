@@ -22,7 +22,7 @@ function log_error() {
 }
 
 function setup() {
-    if [ ! -z $1 ] || [ ! -d ./files ]; then
+    if [ ! -z $1 ] || [ ! -d "$SCRIPT_DIR"/files ]; then
         log_info "setting pi video kiosk"
         ### Update system
 
@@ -82,11 +82,11 @@ EOF
 }
 
 function reset() {
-    if [ ! -z $1 ] || [ -d ./files]; then
+    if [ ! -z $1 ] || [ -d "$SCRIPT_DIR"/files]; then
         log_info "reseting video kiosk data"
         stop;
 
-        rm -rf ./files
+        rm -rf "$SCRIPT_DIR"/files
         rm -rf "$TMP_VIDEO_FOLDER"
         log_info "video kiosk data reset now"
     fi
@@ -136,9 +136,9 @@ function get_folder_state() {
 function make_playlist() {
     log_debug "making play list"
 
-    rm -f ./files/playlist.m3u
+    rm -f "$SCRIPT_DIR"/files/playlist.m3u
 
-    local folder="./files/converted"
+    local folder="$SCRIPT_DIR/files/converted"
     local files=""
     if [ -d "$folder" ]; then
         while read path ; do
@@ -151,17 +151,17 @@ function make_playlist() {
 
     if [ -z "$files" ]; then
         log_debug "making play list of default video"
-        echo "$(realpath ./misc/default.mp4)" > ./files/playlist.m3u
+        echo "$(realpath ./misc/default.mp4)" > "$SCRIPT_DIR"/files/playlist.m3u
     else        
-        echo -e "${files/\\n/}" > ./files/playlist.m3u
+        echo -e "${files/\\n/}" > "$SCRIPT_DIR"/files/playlist.m3u
     fi
 }
 
 function has_new_videos() {
     log_debug "checking if there are any new video files"
-    if [ -d "$VIDEO_FOLDER" ] && [ -d ./files/source ]; then
+    if [ -d "$VIDEO_FOLDER" ] && [ -d "$SCRIPT_DIR"/files/source ]; then
         local videos="$(get_folder_state "$VIDEO_FOLDER")"
-        local current_videos="$(get_folder_state ./files/source)"
+        local current_videos="$(get_folder_state "$SCRIPT_DIR"/files/source)"
         
         if [ "$videos" != "$current_videos" ]; then
             log_debug "found new video files"
@@ -193,7 +193,7 @@ function videos_are_uploading() {
 
 function copy_source_files() {
     local in_folder="$VIDEO_FOLDER"
-    local out_folder=./files/source
+    local out_folder="$SCRIPT_DIR"/files/source
 
     rm -f "$out_folder/*"
 
@@ -207,7 +207,7 @@ function copy_source_files() {
 
 function convert_source_files() {
     log_debug "converting video files"
-    local in_folder=./files/source
+    local in_folder="$SCRIPT_DIR"/files/source
     local out_folder="$TMP_VIDEO_FOLDER"
     rm -rf "$out_folder"
     mkdir -p "$out_folder"
@@ -232,7 +232,7 @@ function convert_source_files() {
 
 function move_converted_files() {
     local in_folder="$TMP_VIDEO_FOLDER"
-    local out_folder=./files/converted
+    local out_folder="$SCRIPT_DIR"/files/converted
 
     rm -f "$out_folder/*"
 
@@ -249,7 +249,7 @@ function run_vlc() {
     pkill -f vlc
     make_playlist
 
-    vlc --no-osd --fullscreen --loop ./files/playlist.m3u  > /dev/null 2>&1 &
+    vlc --no-osd --fullscreen --loop "$SCRIPT_DIR"/files/playlist.m3u  > /dev/null 2>&1 &
 }
 
 function start() {
@@ -259,7 +259,7 @@ function start() {
 
     run_vlc;
 
-    if [ ! -d ./files ]; then
+    if [ ! -d "$SCRIPT_DIR"/files ]; then
         setup;
     fi
     

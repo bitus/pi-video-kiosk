@@ -15,12 +15,15 @@ bash ./video-kiosk setup
 sudo reboot now
 ```
 
-This command will fix Raspbian to auto login, add autostart task and enable VNC server
+This command will install vlc, ffmpeg, pv packages and fix Raspbian to auto login, add autostart task and enable VNC server
 
 Allowed commands
 
-* setup - sets script up
+* setup - sets script up, requires reboot
 * reset - clears script data and runs setup again
 * stop - stops script
 * start - starts script
 * restart - restarts script
+* uninstall - uninstalls auto login and auto run scripts, requires reboot
+
+You can check script log in /tmp/video-kiosk.log file

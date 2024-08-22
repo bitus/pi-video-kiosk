@@ -1,6 +1,8 @@
 #!/usr/bin/bash
 
-source .env set
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+
+source "$SCRIPT_DIR/.env" set
 
 #Set default values
 LOG_LEVEL=${LOG_LEVEL:-'info'}
@@ -8,7 +10,6 @@ WATCH_DELAY=${WATCH_DELAY:-30}
 VIDEO_FOLDER=${VIDEO_FOLDER:-'~/Videos'}
 # VIDEO_SCALE=${VIDEO_SCALE:-240}
 TMP_VIDEO_FOLDER="/tmp/pi-kiosk-videos"
-SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 APP_NAME="$(basename $SCRIPT_DIR)"
 
@@ -31,12 +32,14 @@ is_syslog() { if [ -f /var/log/syslog ]; then return 0; else return 1; fi }
 do_log() { 
     local msg="$(date '+%T.%6N') [ $1 ] $2"
     
-    [ $1 == 'ERROR' ] && >&2 echo "$msg" || echo "$msg"    
+    [ $1 == 'ERROR' ] && >&2 echo -e "$msg" || echo -e "$msg"    
 
-    if is_syslog; then
-        local facility="local7.$(case $1 in "ERROR") echo "err";; "DEBUG") echo "debug";; *) echo "info";; esac)";
-        logger -p $facility "$msg"    
-    fi
+    # if is_syslog; then
+    #     local facility="local7.$(case $1 in "ERROR") echo "err";; "DEBUG") echo "debug";; *) echo "info";; esac)";
+    #     logger -p $facility "$msg"    
+    # fi
+
+    echo -e $msg >> "/tmp/video-kiosk.log"
 
     return 0; 
 }
@@ -44,6 +47,7 @@ log_debug() { [ $LOG_LEVEL == 'debug' ] && do_log "DEBUG" "$1"; return 0; }
 log_info()  { do_log "INFO " "$1"; return 0; }
 log_error() { do_log "ERROR" "$1"; return 0; }
 
+is_yes () { [ $1 == "yes" ] && return 0 || return 1; }
 is_force () { [ ! -z $1 ] && return 0 || return 1; }
 
 is_folder() { [ -d $1 ] && return 0 || return 1; }
@@ -55,7 +59,7 @@ is_watch_folder() { return $(is_folder "$WATCH_FOLDER"); }
 
 is_video_kiosk() { 
     local others="$(fuser "$SCRIPT_DIR/video-kiosk" 2>/dev/null | xargs | grep -x -v $$)"
-    [ -z $others ] && return 1 || return 0;
+    [[ -z $others ]] && return 1 || return 0;
 }
 
 
@@ -64,7 +68,7 @@ is_vlc() { if pgrep -x "vlc" > /dev/null; then return 0; else return 1; fi }
 kill_vlc() { 
     if is_vlc; then
         log_info "Terminating VLC player"
-        pkill vlc; 
+        pkill vlc || log_error "Unable to pkill vlc process"; 
     fi
     return 0; 
 }
@@ -74,7 +78,7 @@ kill_video_kiosk() {
     pid=$(<<<"$pid" xargs -n1 sh -c 'kill -0 "$1" 2>/dev/null && echo "$1"' --)
 
     if [ -n "$pid" ]; then
-        kill $pid
+        kill $pid || log_error "Unable to kill video-kiosk process: $pid";
     fi
     kill_vlc
 
@@ -90,10 +94,10 @@ ensure_folders() {
 }
 
 is_setup() {
-    if ! is_files_folder; then
-        log_error "Video kiosk is not set up yet. Please run 'bash video-kiosk setup' first"
-        return 1;
-    fi
+    # if ! is_files_folder; then
+    #     log_error "Video kiosk is not set up yet. Please run 'bash video-kiosk setup' first"
+    #     return 1;
+    # fi
 
     return 0;    
 }
@@ -102,24 +106,27 @@ setup() {
     if is_force $1 || ! is_files_folder; then
         log_info "Setting up video kiosk ..."
 
-        log_info "  * installing required componsents: vlc, ffmpeg, pv"
+        log_info "  - installing required componsents: vlc, ffmpeg, pv"
         sudo apt install -y vlc ffmpeg pv > /dev/null 2>&1
 
         ###
-        log_info "  * enabling autologin mode"
-        sudo sed /etc/lightdm/lightdm.conf -i -e "s/^\(#\|\)autologin-user=.*/autologin-user=$USER/"
-        sudo rm -f /etc/systemd/system/getty@tty1.service.d/autologin.conf
-        sudo bash -c 'cat > /etc/systemd/system/getty@tty1.service.d/autologin.conf << EOF
+        if is_yes $SETUP_AUTOLOGIN; then
+            log_info "  - enabling autologin mode"
+            sudo sed /etc/lightdm/lightdm.conf -i -e "s/^\(#\|\)autologin-user=.*/autologin-user=$USER/"
+            sudo rm -f /etc/systemd/system/getty@tty1.service.d/autologin.conf
+            sudo bash -c 'cat > /etc/systemd/system/getty@tty1.service.d/autologin.conf << EOF
 [Service]
 ExecStart=
 ExecStart=-/sbin/agetty --autologin $USER --noclear %I \$TERM
 EOF'
-        sudo systemctl --quiet set-default graphical.target
+            sudo systemctl --quiet set-default graphical.target
+        fi
 
         ###
-        log_info "  * setting up VNC server"
-        sudo rm -f /etc/xdg/autostart/vnc_xrandr.desktop
-        sudo bash -c 'cat > /etc/xdg/autostart/vnc_xrandr.desktop << EOF
+        if is_yes $SETUP_PI_VNC_SERVER; then
+            log_info "  - setting up VNC server"
+            sudo rm -f /etc/xdg/autostart/vnc_xrandr.desktop
+            sudo bash -c 'cat > /etc/xdg/autostart/vnc_xrandr.desktop << EOF
 [Desktop Entry]
 Type=Application
 Name=vnc_xrandr
@@ -127,27 +134,31 @@ Comment=Set resolution for VNC
 NoDisplay=true
 Exec=sh -c "if ! (xrandr | grep -q -w connected) ; then /usr/bin/xrandr --fb 1920x1080 ; fi"
 EOF'
-        sudo systemctl enable vncserver-x11-serviced.service;
-        sudo systemctl start vncserver-x11-serviced.service;
+            sudo systemctl enable vncserver-x11-serviced.service;
+            sudo systemctl start vncserver-x11-serviced.service;
+        fi
 
         ###
-        log_info "  * setting up scripts && folders"
+        log_info "  - setting up scripts && folders"
         chmod a+x video-kiosk
 
         ensure_folders
 
-        log_info "  * autostart script"
-        mkdir -p ~/.config/autostart
+        if is_yes $SETUP_AUTOSTART_SCRIPT; then
+            log_info "  - autostart script"
+            mkdir -p ~/.config/autostart
 
-        rm -f ~/.config/autostart/$APP_NAME.desktop
-        cat > ~/.config/autostart/$APP_NAME.desktop << EOF
+            rm -f ~/.config/autostart/$APP_NAME.desktop
+            cat > ~/.config/autostart/$APP_NAME.desktop << EOF
 [Desktop Entry]
 Type=Application
 Name=Video Kiosk
 OnlyShowIn=GNOME;XFCE;LXDE;
 Exec=bash $SCRIPT_DIR/video-kiosk autostart
 EOF
-        if [ ! -z REPLACE_DESKTOP_BACKGROUND ]; then
+        fi
+
+        if is_yes $REPLACE_DESKTOP_BACKGROUND; then
             export DISPLAY=:0.0; pcmanfm --set-wallpaper "$SCRIPT_DIR/misc/default.jpg"
         fi
 
@@ -172,9 +183,11 @@ function reset() {
 function stop() {    
     if is_video_kiosk; then        
         log_info "Stopping video kiosk ..."
-        kill_video_kiosk
+        kill_video_kiosk || log_error "Unable to stop video-kiosk"
         log_info "Video kiosk stopped"
     fi
+
+    return 0;
 }
 
 function stop_if_running() {
@@ -182,6 +195,8 @@ function stop_if_running() {
         log_info "Video kiosk is running already"
         stop;
     fi
+
+    return 0;
 }
 
 get_video_files() {
@@ -212,7 +227,11 @@ get_folder_state() {
 
         if [[ ! -z $files ]]; then
             if [[ "$1" == "$VIDEO_SOURCES" ]]; then
-                local scale="$(<"$SCALEFILE")"
+                local scale=
+                if [ -f "$SCALEFILE" ]; then
+                    scale="$(<"$SCALEFILE")"
+                fi
+                
                 files="$files\nSCALE: $scale"
             else
                 files="$files\nSCALE: $VIDEO_SCALE"
@@ -224,9 +243,11 @@ get_folder_state() {
 }
 
 make_playlist() {
-    log_debug "Making play list"
+    log_info "Making play list"
 
-    rm -f "$PLAYLIST"
+    if [ -f "$PLAYLIST" ]; then
+        rm -f "$PLAYLIST" || log_error "Unable to delete playlist file: $PLAYLIST. Probably file is locked by another program"
+    fi
 
     local files=""
     if [ -d "$VIDEO_CONVERTED" ]; then
@@ -239,25 +260,34 @@ make_playlist() {
     fi
 
     if [ -z "$files" ]; then
-        log_debug "  * making play list of default video"
+        log_info "  - making play list of default video"
         echo "$(realpath ./misc/default.mp4)" > "$PLAYLIST"
-    else        
+    else
+        log_info "Making playlist of following files: $files"        
         echo -e "${files/\\n/}" > "$PLAYLIST"
     fi
+
+    return 0;
 }
 
 has_new_videos() {
-    #log_debug "checking if there are any new video files"
+    log_debug "Checking if there are any new video files"
     if is_watch_folder && is_files_folder; then
         local videos="$(get_folder_state "$WATCH_FOLDER")"
         local current_videos="$(get_folder_state "$VIDEO_SOURCES")"
-        
+
+        log_info "Watching video folder: \n$videos"
+        log_info "Current sources video folder: \n$current_videos"
+
         if [ "$videos" != "$current_videos" ]; then
-            #log_debug "found new video files"
+            log_debug "Found new video files"
             return 0;
         fi
+    else 
+        log_debug "Unable to check for new video files. Either watch folder or files folder doesnt exist"
     fi
 
+    log_debug "No new video files found"
     return 1;
 }
 
@@ -289,9 +319,11 @@ copy_source_files() {
     if [ -d "$src_folder" ]; then
         while read path ; do
             local name=$(basename "$path")
-            cp "$path" "$dest_folder/$name"
+            cp "$path" "$dest_folder/$name" || log_error "Uable to copy source file: $path"
         done <<< "$(get_video_files "$src_folder")"
     fi
+
+    return 0;
 }
 
 convert_source_files() {
@@ -305,22 +337,22 @@ convert_source_files() {
     if [ -d "$src_folder" ]; then
         err="Cannot find any file to convert"
         if [ -z $VIDEO_SCALE ]; then
-            log_info "  * VIDEO_SCALE is not defined. Copping original files instead"
+            log_info "  - VIDEO_SCALE is not defined. Copping original files instead"
             while read path ; do
                 local name=$(basename "$path")
-                log_info "  * copping $name"
+                log_info "  - copping $name"
                 cp "$path" "$dest_folder/$name"
                 err=
             done <<< "$(get_video_files "$src_folder")"            
         else
-            log_info "  * Converting video files to *:$VIDEO_SCALE"
+            log_info "  - Converting video files to *:$VIDEO_SCALE"
             while read path ; do            
                 local name=$(basename "$path")
-                log_info "  * converting $name"
+                log_info "  - converting $name"
                 
                 pv "$path" | ffmpeg -i pipe:0 -v warning \
                    -vf scale=-2:$VIDEO_SCALE -c:v libx264 -crf 18 -preset veryslow -c:a copy \
-                   "$dest_folder/$name"                
+                   "$dest_folder/$name" || log_error "Unable to convert video: $path"
                 err=
             done <<< "$(get_video_files "$src_folder")"
         fi
@@ -337,8 +369,9 @@ convert_source_files() {
 }
 
 move_converted_files() {
-    rm -f "$VIDEO_SOURCES/*"
-    rm -f "$VIDEO_CONVERTED/*"
+    rm -rf "$VIDEO_FILES" || log_error "Unable to delete files folder before moving converted videos"
+    
+    ensure_folders
 
     log_info "Moving converted files"
 
@@ -352,15 +385,17 @@ move_converted_files() {
         done <<< "$(get_video_files "$TMP_CONVERTED")"
     fi
 
-    err="Unable to find any source files"
+    if [ -z $err ]; then 
+        err="Unable to find any source files"
 
-    if [ -d "$VIDEO_SOURCES" ]; then
-        while read path ; do
-            local name=$(basename "$path")
-            mv "$path" "$VIDEO_SOURCES/$name"
-            err=
-        done <<< "$(get_video_files "$TMP_SOURCES")"
-    fi    
+        if [ -d "$VIDEO_SOURCES" ]; then
+            while read path ; do
+                local name=$(basename "$path")
+                mv "$path" "$VIDEO_SOURCES/$name"
+                err=
+            done <<< "$(get_video_files "$TMP_SOURCES")"
+        fi    
+    fi
 
     if [ -z $err ]; then 
         log_info "Moving converted files: Done"
@@ -382,7 +417,8 @@ run_vlc() {
 
     make_playlist
 
-    vlc --no-osd --fullscreen --loop "$PLAYLIST"  > /dev/null 2>&1 &
+    #vlc --no-osd --fullscreen --loop --no-qt-recentplay --qt-continue=0 --no-qt-error-dialogs "$PLAYLIST"  > /dev/null 2>&1 &
+    vlc --no-osd --fullscreen --loop --no-qt-recentplay --qt-continue=0 "$PLAYLIST" &
 
     return 0;
 }
@@ -395,11 +431,11 @@ start() {
     stop;
 
     log_info "Starting video kiosk..."
-    log_info "  * log level: $LOG_LEVEL"
-    log_info "  * watch folder: $WATCH_FOLDER"
-    log_info "  * check for new files timeout: $CHECK_FILES_TIMEOUT"
-    log_info "  * check if videos still uploading timeout: $CHECK_STILL_ULOADING_TIMEOUT"
-    log_info "  * convert new videos to: ${VIDEO_SCALE:-keep original size}"
+    log_info "  - log level: $LOG_LEVEL"
+    log_info "  - watch folder: $WATCH_FOLDER"
+    log_info "  - check for new files timeout: $CHECK_FILES_TIMEOUT"
+    log_info "  - check if videos still uploading timeout: $CHECK_STILL_ULOADING_TIMEOUT"
+    log_info "  - convert new videos to: ${VIDEO_SCALE:-keep original size}"
     
     ensure_folders;
 
@@ -408,6 +444,7 @@ start() {
     while true; do    
         if has_new_videos && ! videos_are_uploading; then
             log_info "Detected $WATCH_FOLDER folder update. Syncing video files ..."
+
             copy_source_files && \
                 convert_source_files && \
                 kill_vlc && \
@@ -442,6 +479,7 @@ run() {
         "stop") stop;;
         "restart") stop; is_setup && start;;
         "reset") reset 1; setup 1;;
+        "uninstall") reset 1;;
         "setup") setup 1;;
       *) >&2 echo "Invalid command: $@. Must be one of following: start stop restart reset setup"; exit 1;;
     esac    

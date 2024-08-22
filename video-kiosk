@@ -9,7 +9,7 @@ LOG_LEVEL=${LOG_LEVEL:-'info'}
 WATCH_DELAY=${WATCH_DELAY:-30}
 VIDEO_FOLDER=${VIDEO_FOLDER:-'~/Videos'}
 # VIDEO_SCALE=${VIDEO_SCALE:-240}
-TMP_VIDEO_FOLDER="/tmp/pi-kiosk-videos"
+TMP_VIDEO_FOLDER="/tmp/video-kiosk.tmp"
 
 APP_NAME="$(basename $SCRIPT_DIR)"
 
@@ -166,7 +166,7 @@ EOF
     fi
 }
 
-function reset() {
+reset() {
     if is_force $1 || is_files_folder; then
         log_info "Reseting data ..."
         
@@ -180,7 +180,7 @@ function reset() {
     fi
 }
 
-function stop() {    
+stop() {    
     if is_video_kiosk; then        
         log_info "Stopping video kiosk ..."
         kill_video_kiosk || log_error "Unable to stop video-kiosk"
@@ -190,7 +190,7 @@ function stop() {
     return 0;
 }
 
-function stop_if_running() {
+stop_if_running() {
     if is_video_kiosk; then 
         log_info "Video kiosk is running already"
         stop;
@@ -276,8 +276,8 @@ has_new_videos() {
         local videos="$(get_folder_state "$WATCH_FOLDER")"
         local current_videos="$(get_folder_state "$VIDEO_SOURCES")"
 
-        log_info "Watching video folder: \n$videos"
-        log_info "Current sources video folder: \n$current_videos"
+        log_debug "Watching video folder: \n$videos"
+        log_debug "Current sources video folder: \n$current_videos"
 
         if [ "$videos" != "$current_videos" ]; then
             log_debug "Found new video files"

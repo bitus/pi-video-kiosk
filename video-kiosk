@@ -14,7 +14,7 @@ TMP_VIDEO_FOLDER="/tmp/video-kiosk.tmp"
 APP_NAME="$(basename $SCRIPT_DIR)"
 
 CHECK_FILES_TIMEOUT=${WATCH_DELAY:-30}
-CHECK_STILL_ULOADING_TIMEOUT=10
+CHECK_STILL_UPLOADING_TIMEOUT={CHECK_STILL_UPLOADING_TIMEOUT:-10}
 
 TMP_FILES="/tmp/$APP_NAME"
 TMP_SOURCES="$TMP_FILES/source"
@@ -296,7 +296,7 @@ videos_are_uploading() {
     if is_watch_folder; then
         local current_state=$(get_folder_state "$WATCH_FOLDER")
 
-        sleep $CHECK_STILL_ULOADING_TIMEOUT
+        sleep $CHECK_STILL_UPLOADING_TIMEOUT
 
         local next_state=$(get_folder_state "$WATCH_FOLDER")
 
@@ -418,7 +418,7 @@ run_vlc() {
     make_playlist
 
     #vlc --no-osd --fullscreen --loop --no-qt-recentplay --qt-continue=0 --no-qt-error-dialogs "$PLAYLIST"  > /dev/null 2>&1 &
-    vlc --no-osd --fullscreen --loop --no-qt-recentplay --qt-continue=0 "$PLAYLIST" &
+    vlc --no-osd --fullscreen --loop --no-qt-recentplay --no-qt-privacy-ask --qt-continue=0 "$PLAYLIST" &
 
     return 0;
 }
@@ -434,7 +434,7 @@ start() {
     log_info "  - log level: $LOG_LEVEL"
     log_info "  - watch folder: $WATCH_FOLDER"
     log_info "  - check for new files timeout: $CHECK_FILES_TIMEOUT"
-    log_info "  - check if videos still uploading timeout: $CHECK_STILL_ULOADING_TIMEOUT"
+    log_info "  - check if videos still uploading timeout: $CHECK_STILL_UPLOADING_TIMEOUT"
     log_info "  - convert new videos to: ${VIDEO_SCALE:-keep original size}"
     
     ensure_folders;
